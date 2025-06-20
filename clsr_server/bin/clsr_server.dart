@@ -97,6 +97,8 @@ Future<Response> _router(Request request) async {
     final params = request.url.queryParameters;
     final floor = params['floor'];
     final zone = params['zone'];
+    final startTime = params['start_time'];
+    final endTime = params['end_time'];
 
     var sql = 'SELECT * FROM seats WHERE 1=1';
     var sqlParams = <dynamic>[];
@@ -110,18 +112,31 @@ Future<Response> _router(Request request) async {
     }
 
     final results = db.select(sql, sqlParams);
-    var seats =
-        results
-            .map(
-              (row) => {
-                'id': row['id'],
-                'name': row['name'],
-                'floor': row['floor'],
-                'zone': row['zone'],
-                'isAvailable': row['isAvailable'] == 1,
-              },
-            )
-            .toList();
+
+    List<Map<String, dynamic>> seats = [];
+    for (final row in results) {
+      bool isAvailable = true;
+      if (startTime != null && endTime != null) {
+        final conflict = db.select(
+          'SELECT 1 FROM reservation WHERE seat_name = ? AND '
+          '((start_time < ? AND end_time > ?) OR (start_time < ? AND end_time > ?))',
+          [row['name'], endTime, endTime, startTime, startTime],
+        );
+        if (conflict.isNotEmpty) {
+          isAvailable = false;
+        }
+      } else {
+        // 如果没传时间段，默认用 seats 表的 isAvailable 字段
+        isAvailable = row['isAvailable'] == 1;
+      }
+      seats.add({
+        'id': row['id'],
+        'name': row['name'],
+        'floor': row['floor'],
+        'zone': row['zone'],
+        'isAvailable': isAvailable,
+      });
+    }
 
     return Response.ok(
       jsonEncode({'seats': seats}),
@@ -170,6 +185,15 @@ Future<Response> _router(Request request) async {
     final startTime = data['start_time'];
     final endTime = data['end_time'];
 
+    // 新增：校验开始时间必须早于结束时间
+    if (DateTime.parse(startTime).isAfter(DateTime.parse(endTime)) ||
+        DateTime.parse(startTime).isAtSameMomentAs(DateTime.parse(endTime))) {
+      return Response.ok(
+        jsonEncode({'success': false, 'msg': '开始时间必须早于结束时间'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
     // 检查时间冲突
     final conflict = db.select(
       'SELECT * FROM reservation WHERE seat_name = ? AND '
@@ -187,8 +211,9 @@ Future<Response> _router(Request request) async {
       'INSERT INTO reservation (username, seat_name, start_time, end_time) VALUES (?, ?, ?, ?)',
       [username, seatName, startTime, endTime],
     );
-    // 同时更新座位状态为不可用
-    db.execute('UPDATE seats SET isAvailable = 0 WHERE name = ?', [seatName]);
+    // 删除这行，不再更新 seats 表的 isAvailable 字段
+    // db.execute('UPDATE seats SET isAvailable = 0 WHERE name = ?', [seatName]);
+
     return Response.ok(
       jsonEncode({'success': true}),
       headers: {'content-type': 'application/json'},
@@ -219,6 +244,35 @@ Future<Response> _router(Request request) async {
             .toList();
     return Response.ok(
       jsonEncode({'success': true, 'records': records}),
+      headers: {'content-type': 'application/json'},
+    );
+  }
+
+  if (request.url.path == 'cancel_reservation' && request.method == 'POST') {
+    final body = await request.readAsString();
+    final data = jsonDecode(body);
+    final username = data['username'];
+    final seatName = data['seat_name'];
+    final startTime = data['start_time'];
+    final endTime = data['end_time'];
+
+    // 删除对应预约记录
+    final result = db.select(
+      'SELECT * FROM reservation WHERE username = ? AND seat_name = ? AND start_time = ? AND end_time = ?',
+      [username, seatName, startTime, endTime],
+    );
+    if (result.isEmpty) {
+      return Response.ok(
+        jsonEncode({'success': false, 'msg': '未找到该预约记录'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+    db.execute(
+      'DELETE FROM reservation WHERE username = ? AND seat_name = ? AND start_time = ? AND end_time = ?',
+      [username, seatName, startTime, endTime],
+    );
+    return Response.ok(
+      jsonEncode({'success': true}),
       headers: {'content-type': 'application/json'},
     );
   }

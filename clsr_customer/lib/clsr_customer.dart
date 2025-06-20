@@ -42,7 +42,17 @@ class AuthPage extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                FlutterLogo(size: 80),
+                // 新增标题
+                Text(
+                  '图书馆选座系统',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.deepPurple,
+                  ),
+                ),
+                SizedBox(height: 32),
+                Icon(Icons.menu_book, size: 80, color: Colors.deepPurple),
                 SizedBox(height: 40),
                 TextField(
                   controller: _usernameCtrl,
@@ -264,8 +274,9 @@ class _SeatListPageState extends State<HomePage> {
             itemBuilder:
                 (context) => [
                   PopupMenuItem(value: '全部', child: Text('全部')),
-                  PopupMenuItem(value: '1', child: Text('1楼')),
-                  PopupMenuItem(value: '2', child: Text('2楼')),
+                  PopupMenuItem(value: '1F', child: Text('1楼')),
+                  PopupMenuItem(value: '2F', child: Text('2楼')),
+                  PopupMenuItem(value: '3F', child: Text('3楼')),
                 ],
             icon: Icon(Icons.filter_alt),
           ),
@@ -279,19 +290,24 @@ class _SeatListPageState extends State<HomePage> {
             itemBuilder:
                 (context) => [
                   PopupMenuItem(value: '全部', child: Text('全部区域')),
-                  PopupMenuItem(value: 'A', child: Text('A区')),
-                  PopupMenuItem(value: 'B', child: Text('B区')),
+                  PopupMenuItem(value: 'A区', child: Text('A区')),
+                  PopupMenuItem(value: 'B区', child: Text('B区')),
+                  PopupMenuItem(value: 'C区', child: Text('C区')),
                 ],
             icon: Icon(Icons.layers),
           ),
           IconButton(
             icon: Icon(Icons.person),
             tooltip: '个人中心',
-            onPressed: () {
-              Navigator.push(
+            onPressed: () async {
+              // 等待个人中心页面返回
+              final needRefresh = await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => ProfilePage()),
               );
+              if (needRefresh == true) {
+                _fetchSeats(); // 返回true时刷新座位列表
+              }
             },
           ),
         ],
@@ -320,10 +336,16 @@ class _SeatListPageState extends State<HomePage> {
   }
 
   void _fetchSeats() async {
-    // 这里用 http 代替 Dio，实际项目可用 Dio
     final params = <String, String>{};
     if (_selectedFloor != '全部') params['floor'] = _selectedFloor;
     if (_selectedZone != '全部') params['zone'] = _selectedZone;
+
+    // 新增：传递时间段参数
+    final now = DateTime.now();
+    final startTime = now.toIso8601String();
+    final endTime = now.add(Duration(hours: 1)).toIso8601String();
+    params['start_time'] = startTime;
+    params['end_time'] = endTime;
 
     final uri = Uri.http('10.0.2.2:8080', '/seats', params);
     try {
@@ -373,6 +395,7 @@ class _SeatListPageState extends State<HomePage> {
   }
 }
 
+// ...existing code...
 class SeatCard extends StatelessWidget {
   final Seat seat;
   final VoidCallback onTap;
@@ -384,7 +407,8 @@ class SeatCard extends StatelessWidget {
     return Card(
       color: seat.isAvailable ? Colors.green[100] : Colors.red[100],
       child: InkWell(
-        onTap: seat.isAvailable ? onTap : null,
+        // 修改这里：所有座位都能点击
+        onTap: onTap,
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -407,8 +431,6 @@ class SeatCard extends StatelessWidget {
     );
   }
 }
-
-// ...existing code...
 
 class ReservationRecord {
   final String seatName;
@@ -486,6 +508,58 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  void _cancelReservation(ReservationRecord record) async {
+    final username = globalUsername ?? '';
+    if (username.isEmpty) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: Text('确认取消预约'),
+            content: Text('确定要取消该预约吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text('确定'),
+              ),
+            ],
+          ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('http://10.0.2.2:8080/cancel_reservation'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': username,
+          'seat_name': record.seatName,
+          'start_time': record.startTime.toIso8601String(),
+          'end_time': record.endTime.toIso8601String(),
+        }),
+      );
+      final data = jsonDecode(response.body);
+      if (data['success'] == true) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('取消成功')));
+        Navigator.pop(context, true); // 返回并通知 seats 列表刷新
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(data['msg'] ?? '取消失败')));
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('网络错误，取消失败')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -539,6 +613,11 @@ class _ProfilePageState extends State<ProfilePage> {
                           subtitle: Text(
                             '开始: ${record.startTime.toString().substring(0, 16)}\n结束: ${record.endTime.toString().substring(0, 16)}',
                           ),
+                          trailing: IconButton(
+                            icon: Icon(Icons.cancel, color: Colors.red),
+                            tooltip: '取消预约',
+                            onPressed: () => _cancelReservation(record),
+                          ),
                         );
                       },
                     ),
@@ -548,8 +627,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 }
-
-// ...existing code...
 
 class SeatDetailPage extends StatefulWidget {
   final Seat seat;
@@ -563,6 +640,48 @@ class SeatDetailPage extends StatefulWidget {
 class _SeatDetailPageState extends State<SeatDetailPage> {
   DateTime _selectedStartTime = DateTime.now();
   DateTime _selectedEndTime = DateTime.now().add(Duration(hours: 1));
+  bool? _canReserve; // null: 未检测, true: 可预约, false: 冲突
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAvailability();
+  }
+
+  Future<void> _checkAvailability() async {
+    setState(() {
+      _canReserve = null; // 开始检测时设为null，显示加载
+    });
+    final seatName = widget.seat.name;
+    final startTime = _selectedStartTime.toIso8601String();
+    final endTime = _selectedEndTime.toIso8601String();
+    try {
+      final res = await http.get(
+        Uri.http('10.0.2.2:8080', '/seats', {
+          'floor': widget.seat.floor,
+          'zone': widget.seat.zone,
+          'start_time': startTime,
+          'end_time': endTime,
+        }),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final seats =
+            (data['seats'] as List).map((e) => Seat.fromJson(e)).toList();
+        final thisSeat = seats.firstWhere(
+          (s) => s.name == seatName,
+          orElse: () => widget.seat,
+        );
+        setState(() {
+          _canReserve = thisSeat.isAvailable;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _canReserve = null;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -573,11 +692,24 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Chip(
-              label: Text(widget.seat.isAvailable ? '可用' : '已占用'),
-              backgroundColor:
-                  widget.seat.isAvailable ? Colors.green[200] : Colors.red[200],
-            ),
+            if (_canReserve == null)
+              Row(
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('正在检测座位是否空闲...'),
+                ],
+              )
+            else
+              Chip(
+                label: Text(_canReserve! ? '可用' : '已占用'),
+                backgroundColor:
+                    _canReserve! ? Colors.green[200] : Colors.red[200],
+              ),
             SizedBox(height: 12),
             Text(
               '${widget.seat.zone}区 ${widget.seat.name}',
@@ -597,7 +729,10 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
                   context,
                   _selectedStartTime,
                 );
-                if (picked != null) setState(() => _selectedStartTime = picked);
+                if (picked != null) {
+                  setState(() => _selectedStartTime = picked);
+                  _checkAvailability();
+                }
               },
             ),
             ListTile(
@@ -610,12 +745,17 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
                   context,
                   _selectedEndTime,
                 );
-                if (picked != null) setState(() => _selectedEndTime = picked);
+                if (picked != null) {
+                  setState(() => _selectedEndTime = picked);
+                  _checkAvailability();
+                }
               },
             ),
             SizedBox(height: 24),
+            if (_canReserve == false)
+              Text('该时间段已被预约', style: TextStyle(color: Colors.red)),
             ElevatedButton(
-              onPressed: widget.seat.isAvailable ? _handleReservation : null,
+              onPressed: _canReserve == true ? _handleReservation : null,
               child: Text('立即预约'),
             ),
           ],
@@ -644,7 +784,7 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
   }
 
   void _handleReservation() async {
-    final username = globalUsername ?? ''; // 取全局变量
+    final username = globalUsername ?? '';
     final seatName = widget.seat.name;
     final startTime = _selectedStartTime.toIso8601String();
     final endTime = _selectedEndTime.toIso8601String();
@@ -653,6 +793,14 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('请先登录')));
+      return;
+    }
+
+    if (_selectedStartTime.isAfter(_selectedEndTime) ||
+        _selectedStartTime.isAtSameMomentAs(_selectedEndTime)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('开始时间必须早于结束时间')));
       return;
     }
 
@@ -677,6 +825,8 @@ class _SeatDetailPageState extends State<SeatDetailPage> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(data['msg'] ?? '预约失败')));
+        // 预约失败后，刷新可用性
+        _checkAvailability();
       }
     } catch (e) {
       ScaffoldMessenger.of(
